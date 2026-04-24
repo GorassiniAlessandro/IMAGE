@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
+import io
 import json
 import os
+import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -12,6 +15,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
+
+try:
+  from PIL import Image, ImageDraw
+except Exception:  # pragma: no cover - optional dependency fallback
+  Image = None
+  ImageDraw = None
 
 
 ProviderName = Literal["mock", "fooocus"]
@@ -125,25 +134,116 @@ class MockImageProvider(ImageProvider):
     def generate(self, context: GenerationContext) -> list[ImageItem]:
         items: list[ImageItem] = []
         for index in range(context.count):
-            title = f"Preview {index + 1}"
+            title = f"Render {index + 1}"
             accent = self._accent_color(context.prompt, index)
-            svg = self._build_svg(
-                title=title,
-                prompt=context.prompt,
-                style=context.style,
-                aspect_ratio=context.aspect_ratio,
-                accent=accent,
-            )
-            encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+            if Image is not None and ImageDraw is not None:
+                image_data_uri = self._build_png_data_uri(
+                    title=title,
+                    prompt=context.prompt,
+                    style=context.style,
+                    aspect_ratio=context.aspect_ratio,
+                    accent=accent,
+                    index=index,
+                )
+                notes = _build_preview_notes(context) + " | Render mode: local-png"
+            else:
+                svg = self._build_svg(
+                    title=title,
+                    prompt=context.prompt,
+                    style=context.style,
+                    aspect_ratio=context.aspect_ratio,
+                    accent=accent,
+                )
+                encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+                image_data_uri = f"data:image/svg+xml;base64,{encoded}"
+                notes = _build_preview_notes(context) + " | Render mode: svg-fallback"
             items.append(
                 ImageItem(
                     title=title,
-                    image_data_uri=f"data:image/svg+xml;base64,{encoded}",
+                    image_data_uri=image_data_uri,
                     prompt=context.prompt,
-                    notes=_build_preview_notes(context),
+                    notes=notes,
                 )
             )
         return items
+
+    @staticmethod
+    def _build_png_data_uri(title: str, prompt: str, style: str, aspect_ratio: str, accent: str, index: int) -> str:
+        seed = MockImageProvider._seed_from_prompt(prompt, style, aspect_ratio, index)
+        rng = random.Random(seed)
+        width, height = MockImageProvider._parse_aspect_ratio(aspect_ratio)
+        width = max(512, min(width, 1536))
+        height = max(512, min(height, 1536))
+
+        image = Image.new("RGB", (width, height), "#080b16")
+        draw = ImageDraw.Draw(image, "RGBA")
+
+        accent_rgb = MockImageProvider._hex_to_rgb(accent)
+
+        for band in range(9):
+            alpha = 30 + band * 8
+            offset = int((band / 9) * height)
+            color = (accent_rgb[0], accent_rgb[1], accent_rgb[2], alpha)
+            draw.rectangle([(0, offset), (width, offset + height // 6)], fill=color)
+
+        for _ in range(26):
+            x0 = rng.randint(-width // 4, width)
+            y0 = rng.randint(-height // 4, height)
+            radius = rng.randint(height // 12, height // 3)
+            tone = (
+                min(255, accent_rgb[0] + rng.randint(-35, 35)),
+                min(255, accent_rgb[1] + rng.randint(-35, 35)),
+                min(255, accent_rgb[2] + rng.randint(-35, 35)),
+                rng.randint(35, 95),
+            )
+            draw.ellipse([(x0, y0), (x0 + radius, y0 + radius)], fill=tone)
+
+        frame_color = (255, 255, 255, 40)
+        draw.rounded_rectangle(
+            [(24, 24), (width - 24, height - 24)],
+            radius=24,
+            outline=frame_color,
+            width=2,
+        )
+
+        draw.rounded_rectangle(
+            [(40, height - 130), (width - 40, height - 40)],
+            radius=18,
+            fill=(8, 12, 24, 170),
+            outline=(255, 255, 255, 50),
+            width=1,
+        )
+
+        footer = f"{title} | {style} | {aspect_ratio}"
+        prompt_short = (prompt[:140] + "...") if len(prompt) > 140 else prompt
+        draw.text((56, height - 112), footer, fill=(236, 242, 255, 230))
+        draw.text((56, height - 82), prompt_short, fill=(188, 197, 215, 230))
+
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG", optimize=True)
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+
+    @staticmethod
+    def _seed_from_prompt(prompt: str, style: str, aspect_ratio: str, index: int) -> int:
+        source = f"{prompt}|{style}|{aspect_ratio}|{index}"
+        digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        return int(digest[:8], 16)
+
+    @staticmethod
+    def _parse_aspect_ratio(aspect_ratio: str) -> tuple[int, int]:
+        try:
+            width_str, height_str = aspect_ratio.lower().split("x", maxsplit=1)
+            return int(width_str), int(height_str)
+        except Exception:
+            return 1024, 1024
+
+    @staticmethod
+    def _hex_to_rgb(color: str) -> tuple[int, int, int]:
+        color = color.lstrip("#")
+        if len(color) != 6:
+            return 34, 197, 94
+        return int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
 
     @staticmethod
     def _accent_color(prompt: str, index: int) -> str:
