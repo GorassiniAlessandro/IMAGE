@@ -6,7 +6,10 @@ import html
 import io
 import json
 import os
+import psutil
 import random
+import re
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -22,11 +25,28 @@ except Exception:  # pragma: no cover - optional dependency fallback
   Image = None
   ImageDraw = None
 
+try:
+  import torch
+except Exception:  # pragma: no cover - optional dependency fallback
+  torch = None
 
-ProviderName = Literal["mock", "fooocus"]
+try:
+  from diffusers import StableDiffusionPipeline
+except Exception:  # pragma: no cover - optional dependency fallback
+  StableDiffusionPipeline = None
+
+try:
+  from deep_translator import GoogleTranslator
+except Exception:  # pragma: no cover - optional dependency fallback
+  GoogleTranslator = None
+
+
+ProviderName = Literal["mock", "fooocus", "local"]
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT_DIR / "studio_config.json"
+TRAINING_RAW_DIR = ROOT_DIR / "training" / "dataset" / "raw"
+PERSONAL_LORA_DEFAULT_PATH = ROOT_DIR / "training" / "output" / "personal-lora" / "pytorch_lora_weights.safetensors"
 
 DEFAULT_PROFILES: dict[str, dict[str, object]] = {
   "default": {
@@ -63,6 +83,140 @@ DEFAULT_PROFILES: dict[str, dict[str, object]] = {
   },
 }
 
+STYLE_PRESETS: dict[str, dict[str, str]] = {
+  "Default": {"prefix": "", "suffix": "", "negative": ""},
+  "Photographic": {
+    "prefix": "professional photo, realistic lighting, highly detailed",
+    "suffix": "85mm lens, natural skin texture",
+    "negative": "cartoon, cgi, low detail",
+  },
+  "Cinematic": {
+    "prefix": "cinematic composition, dramatic lighting, film still",
+    "suffix": "anamorphic look, color grading, volumetric light",
+    "negative": "flat lighting, low contrast",
+  },
+  "Anime": {
+    "prefix": "anime style, clean lineart, vibrant colors",
+    "suffix": "studio quality illustration",
+    "negative": "photorealistic, blurry lineart",
+  },
+  "Manga": {
+    "prefix": "manga style, black and white, dynamic framing",
+    "suffix": "inked details, screen tones",
+    "negative": "color, photorealistic",
+  },
+  "Concept Art": {
+    "prefix": "concept art, production design, ideation",
+    "suffix": "high detail environment, mood exploration",
+    "negative": "unfinished sketch, noisy",
+  },
+  "Fantasy Art": {
+    "prefix": "epic fantasy art, magical atmosphere",
+    "suffix": "ornate details, grand composition",
+    "negative": "modern mundane setting",
+  },
+  "Sci-Fi": {
+    "prefix": "science fiction aesthetic, futuristic design",
+    "suffix": "advanced materials, cinematic scale",
+    "negative": "medieval style",
+  },
+  "Cyberpunk": {
+    "prefix": "cyberpunk neon city, rain reflections, moody",
+    "suffix": "high contrast, chrome surfaces",
+    "negative": "pastel minimalism",
+  },
+  "Pixel Art": {
+    "prefix": "pixel art, 16-bit style",
+    "suffix": "clean pixel grid, retro game palette",
+    "negative": "smooth shading, photoreal",
+  },
+  "Watercolor": {
+    "prefix": "watercolor painting",
+    "suffix": "soft pigment bleed, textured paper",
+    "negative": "hard edges, digital noise",
+  },
+  "Oil Painting": {
+    "prefix": "oil painting style",
+    "suffix": "visible brush strokes, rich texture",
+    "negative": "flat digital",
+  },
+  "3D Render": {
+    "prefix": "high quality 3d render",
+    "suffix": "global illumination, physically based materials",
+    "negative": "hand-drawn look",
+  },
+  "Low Poly": {
+    "prefix": "low poly 3d style",
+    "suffix": "geometric shapes, flat shading",
+    "negative": "high poly photoreal",
+  },
+  "Isometric": {
+    "prefix": "isometric illustration",
+    "suffix": "clean geometry, balanced composition",
+    "negative": "perspective distortion",
+  },
+  "Architectural": {
+    "prefix": "architectural visualization",
+    "suffix": "precise structure, materials realism",
+    "negative": "deformed geometry",
+  },
+  "Product Shot": {
+    "prefix": "studio product photography",
+    "suffix": "clean background, softbox lighting",
+    "negative": "cluttered background",
+  },
+  "Portrait Studio": {
+    "prefix": "portrait studio photo",
+    "suffix": "sharp eyes, natural skin tones",
+    "negative": "deformed face, extra limbs",
+  },
+  "Noir": {
+    "prefix": "film noir aesthetic",
+    "suffix": "moody shadows, monochrome palette",
+    "negative": "saturated cheerful colors",
+  },
+  "Minimal": {
+    "prefix": "minimalist design",
+    "suffix": "simple shapes, negative space",
+    "negative": "visual clutter",
+  },
+}
+
+AVAILABLE_STYLES: list[str] = list(STYLE_PRESETS.keys())
+
+ITALIAN_HINT_WORDS = {
+  "il", "lo", "la", "i", "gli", "le", "un", "una", "uno", "di", "a", "da", "in", "con", "su",
+  "per", "tra", "fra", "e", "o", "ma", "non", "che", "come", "ritratto", "stile", "dettagli",
+  "luce", "notte", "giorno", "futuristico", "cartone", "anime", "sfondo", "qualita",
+}
+
+
+def _looks_like_italian(text: str) -> bool:
+  lowered = text.lower()
+  if any(char in lowered for char in "àèéìòù"):
+    return True
+  tokens = re.findall(r"[a-zA-Z]+", lowered)
+  if not tokens:
+    return False
+  matches = sum(1 for token in tokens if token in ITALIAN_HINT_WORDS)
+  return matches >= 2
+
+
+def _translate_to_english(text: str) -> str:
+  source = text.strip()
+  if not source:
+    return text
+  if GoogleTranslator is None:
+    return text
+  if source.isascii() and not _looks_like_italian(source):
+    return text
+  try:
+    translated = GoogleTranslator(source="auto", target="en").translate(source)
+    return translated if translated else text
+  except Exception:
+    # Never block generation if translation fails.
+    return text
+
 
 class GenerateRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=2000)
@@ -73,6 +227,7 @@ class GenerateRequest(BaseModel):
     count: int = Field(default=1, ge=1, le=4)
     seed: int | None = Field(default=None)
     creative_note: str = Field(default="", max_length=2000)
+    use_personal_model: bool = Field(default=True)
 
 
 class ImageItem(BaseModel):
@@ -100,12 +255,26 @@ class ProfileDefinition(BaseModel):
 class StudioConfig(BaseModel):
     provider: ProviderName = "mock"
     fooocus_endpoint: str = "http://127.0.0.1:7865"
+    local_model_id: str = "runwayml/stable-diffusion-v1-5"
+    local_device: str = "auto"
+    local_num_inference_steps: int = Field(default=25, ge=1, le=100)
+    local_guidance_scale: float = Field(default=7.5, ge=0.0, le=20.0)
+    local_use_personal_lora: bool = True
+    local_personal_lora_path: str = str(PERSONAL_LORA_DEFAULT_PATH)
+    local_personal_lora_scale: float = Field(default=1.0, ge=0.1, le=2.0)
     profiles: dict[str, ProfileDefinition] = Field(default_factory=dict)
 
 
 class ConfigUpdate(BaseModel):
     provider: ProviderName | None = None
     fooocus_endpoint: str | None = None
+    local_model_id: str | None = None
+    local_device: str | None = None
+    local_num_inference_steps: int | None = Field(default=None, ge=1, le=100)
+    local_guidance_scale: float | None = Field(default=None, ge=0.0, le=20.0)
+    local_use_personal_lora: bool | None = None
+    local_personal_lora_path: str | None = None
+    local_personal_lora_scale: float | None = Field(default=None, ge=0.1, le=2.0)
     profiles: dict[str, ProfileDefinition] | None = None
 
 
@@ -119,6 +288,7 @@ class GenerationContext:
     aspect_ratio: str
     seed: int | None
     count: int
+    use_personal_model: bool
 
 
 class ImageProvider:
@@ -300,6 +470,234 @@ class FooocusBridgeProvider(ImageProvider):
         )
 
 
+class LocalDiffusersProvider(ImageProvider):
+    provider_name: ProviderName = "local"
+
+    def __init__(
+        self,
+        model_id: str,
+        device: str,
+        num_inference_steps: int,
+        guidance_scale: float,
+        enable_personal_lora: bool,
+        personal_lora_path: str,
+        personal_lora_scale: float,
+    ) -> None:
+        self.model_id = model_id
+        self.device = device
+        self.num_inference_steps = num_inference_steps
+        self.guidance_scale = guidance_scale
+        self.enable_personal_lora = enable_personal_lora
+        self.personal_lora_path = personal_lora_path
+        self.personal_lora_scale = personal_lora_scale
+        self._pipeline: Any | None = None
+        self._effective_steps = num_inference_steps
+        self._active_with_personal_model = False
+
+    def _check_available_memory(self) -> bool:
+        """Check if enough memory is available for safe generation."""
+        try:
+            memory = psutil.virtual_memory()
+            # On CPU: reserve at least 2GB free (conservative)
+            min_free_bytes = 2 * 1024 * 1024 * 1024
+            return memory.available >= min_free_bytes
+        except Exception:
+            return True  # Assume OK if psutil fails
+
+    def _resolve_device(self) -> str:
+        if self.device and self.device != "auto":
+            return self.device
+        if torch is not None and torch.cuda.is_available():
+            return "cuda"
+        return "cpu"
+
+    def _resolve_personal_lora_path(self) -> Path:
+        candidate = Path(self.personal_lora_path)
+        if candidate.is_absolute():
+            return candidate
+        return (ROOT_DIR / candidate).resolve()
+
+    def _ensure_pipeline(self, use_personal_model: bool) -> Any:
+        if StableDiffusionPipeline is None or torch is None:
+            raise RuntimeError(
+                "Provider locale non disponibile: installa dipendenze con 'pip install diffusers transformers accelerate torch safetensors'."
+            )
+        if self._pipeline is not None and self._active_with_personal_model == use_personal_model:
+            return self._pipeline
+
+        target_device = self._resolve_device()
+        dtype = torch.float16 if target_device == "cuda" else torch.float32
+        model_source = self.model_id
+        candidate = Path(self.model_id)
+        if not candidate.is_absolute():
+            local_candidate = (ROOT_DIR / candidate).resolve()
+            if local_candidate.exists():
+                model_source = str(local_candidate)
+        elif candidate.exists():
+            model_source = str(candidate)
+
+        pipeline = StableDiffusionPipeline.from_pretrained(
+            model_source,
+            torch_dtype=dtype,
+            local_files_only=Path(model_source).exists(),
+            safety_checker=None,
+            requires_safety_checker=False,
+        )
+        pipeline = pipeline.to(target_device)
+        if target_device == "cpu":
+            pipeline.enable_attention_slicing()
+
+        if use_personal_model:
+            lora_path = self._resolve_personal_lora_path()
+            if not lora_path.exists():
+                raise RuntimeError(
+                    f"Modello personale non trovato: {lora_path}. "
+                    "Verifica il training o aggiorna local_personal_lora_path in /api/config."
+                )
+            pipeline.load_lora_weights(str(lora_path.parent), weight_name=lora_path.name)
+            if hasattr(pipeline, "fuse_lora"):
+                pipeline.fuse_lora(lora_scale=self.personal_lora_scale)
+
+        self._pipeline = pipeline
+        self._active_with_personal_model = use_personal_model
+        return self._pipeline
+
+    def generate(self, context: GenerationContext) -> list[ImageItem]:
+        use_personal_model = context.use_personal_model and self.enable_personal_lora
+        pipeline = self._ensure_pipeline(use_personal_model)
+        requested_width, requested_height = _parse_aspect_ratio(context.aspect_ratio)
+        device = self._resolve_device()
+
+        # Keep local CPU inference inside a safe memory envelope.
+        # CPU is very conservative to prevent OOM with diffusion models.
+        if device == "cpu":
+            max_side = 384  # Conservative: reduced from 512
+            min_side = 256
+            max_count = 1
+            # Auto-reduce inference steps on CPU for memory safety
+            self._effective_steps = min(self.num_inference_steps, 15)
+        else:
+            max_side = 1024
+            min_side = 512
+            max_count = 4
+            self._effective_steps = self.num_inference_steps
+            # Check available memory on GPU as well
+            if not self._check_available_memory():
+                max_side = 768  # Fallback to smaller resolution
+                max_count = 2
+
+        width = max(min_side, min(requested_width, max_side))
+        height = max(min_side, min(requested_height, max_side))
+        width = (width // 8) * 8
+        height = (height // 8) * 8
+        safe_count = max(1, min(context.count, max_count))
+
+        results: list[ImageItem] = []
+        for index in range(safe_count):
+            seed_value = context.seed if context.seed is not None else random.randint(1, 2_147_483_647)
+            seed_value = int(seed_value) + index
+            generator = torch.Generator(device=device).manual_seed(seed_value)
+            try:
+                rendered = pipeline(
+                    prompt=context.prompt,
+                    negative_prompt=context.negative_prompt or None,
+                    num_inference_steps=self._effective_steps,
+                    guidance_scale=self.guidance_scale,
+                    width=width,
+                    height=height,
+                    generator=generator,
+                )
+            except RuntimeError as exc:
+                message = str(exc).lower()
+                if "not enough memory" in message or "out of memory" in message:
+                    raise RuntimeError(
+                        f"Memoria insufficiente per la generazione locale (device={device}). "
+                        f"Sistema ha applicato limiti di sicurezza: {width}x{height}@{self._effective_steps}steps, count={safe_count}. "
+                        f"Se il problema persiste, riduci ulteriormente risoluzione/aspect ratio oppure usa solo count=1."
+                    ) from exc
+                raise
+            image = rendered.images[0]
+            _save_training_sample(
+                image=image,
+                prompt=context.prompt,
+                style=context.style,
+                aspect_ratio=context.aspect_ratio,
+                seed=seed_value,
+                negative_prompt=context.negative_prompt,
+            )
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG", optimize=True)
+            encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+            results.append(
+                ImageItem(
+                    title=f"Render {index + 1}",
+                    image_data_uri=f"data:image/png;base64,{encoded}",
+                    prompt=context.prompt,
+                    notes=(
+                        _build_preview_notes(context)
+                      + f" | Render mode: local-diffusers | model: {self.model_id} | seed: {seed_value}"
+                      + (f" | personal-lora: on ({self.personal_lora_scale:.2f})" if use_personal_model else " | personal-lora: off")
+                      + (" | adjusted-for-cpu" if device == "cpu" else "")
+                    ),
+                )
+            )
+        return results
+
+
+def _parse_aspect_ratio(aspect_ratio: str) -> tuple[int, int]:
+    try:
+        width_str, height_str = aspect_ratio.lower().split("x", maxsplit=1)
+        return int(width_str), int(height_str)
+    except Exception:
+        return 1024, 1024
+
+
+def _apply_style_prompt(prompt: str, negative_prompt: str, style: str) -> tuple[str, str]:
+    preset = STYLE_PRESETS.get(style, STYLE_PRESETS["Default"])
+    styled_prompt = " ".join(
+        part for part in [preset.get("prefix", "").strip(), prompt.strip(), preset.get("suffix", "").strip()] if part
+    )
+    style_negative = preset.get("negative", "").strip()
+    merged_negative = ", ".join(part for part in [negative_prompt.strip(), style_negative] if part)
+    return styled_prompt or prompt, merged_negative
+
+
+def _save_training_sample(
+  image: Any,
+  prompt: str,
+  style: str,
+  aspect_ratio: str,
+  seed: int,
+  negative_prompt: str,
+) -> None:
+  """Persist generated samples to gradually build a personal training dataset."""
+  try:
+    TRAINING_RAW_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    base_name = f"sample_{timestamp}_{seed}"
+    image_path = TRAINING_RAW_DIR / f"{base_name}.png"
+    image.save(image_path, format="PNG", optimize=True)
+
+    caption = f"{prompt}. style: {style}. aspect_ratio: {aspect_ratio}."
+    metadata = {
+      "image": image_path.name,
+      "caption": caption,
+      "prompt": prompt,
+      "negative_prompt": negative_prompt,
+      "style": style,
+      "aspect_ratio": aspect_ratio,
+      "seed": seed,
+      "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    (TRAINING_RAW_DIR / f"{base_name}.json").write_text(
+      json.dumps(metadata, ensure_ascii=True, indent=2),
+      encoding="utf-8",
+    )
+  except Exception:
+    # Dataset export should never interrupt normal generation flow.
+    return
+
+
 def _default_profiles() -> dict[str, ProfileDefinition]:
     return {name: ProfileDefinition(**definition) for name, definition in DEFAULT_PROFILES.items()}
 
@@ -316,6 +714,13 @@ def load_config() -> StudioConfig:
             return StudioConfig(
                 provider=raw_data.get("provider", "mock"),
                 fooocus_endpoint=raw_data.get("fooocus_endpoint", "http://127.0.0.1:7865"),
+                local_model_id=raw_data.get("local_model_id", "runwayml/stable-diffusion-v1-5"),
+                local_device=raw_data.get("local_device", "auto"),
+                local_num_inference_steps=raw_data.get("local_num_inference_steps", 25),
+                local_guidance_scale=raw_data.get("local_guidance_scale", 7.5),
+              local_use_personal_lora=raw_data.get("local_use_personal_lora", True),
+              local_personal_lora_path=raw_data.get("local_personal_lora_path", str(PERSONAL_LORA_DEFAULT_PATH)),
+              local_personal_lora_scale=raw_data.get("local_personal_lora_scale", 1.0),
                 profiles=normalized_profiles or _default_profiles(),
             )
         except Exception:
@@ -328,11 +733,34 @@ def save_config(config: StudioConfig) -> None:
 
 
 def create_provider(config: StudioConfig) -> ImageProvider:
-    provider_name = os.getenv("IMAGE_AI_PROVIDER", config.provider).strip().lower()
-    if provider_name == "fooocus":
-        endpoint = os.getenv("FOOOCUS_ENDPOINT", config.fooocus_endpoint)
-        return FooocusBridgeProvider(endpoint)
-    return MockImageProvider()
+  def _env_to_bool(value: str | None, default: bool) -> bool:
+    if value is None:
+      return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+  provider_name = os.getenv("IMAGE_AI_PROVIDER", config.provider).strip().lower()
+  if provider_name == "fooocus":
+    endpoint = os.getenv("FOOOCUS_ENDPOINT", config.fooocus_endpoint)
+    return FooocusBridgeProvider(endpoint)
+  if provider_name == "local":
+    model_id = os.getenv("LOCAL_MODEL_ID", config.local_model_id)
+    device = os.getenv("LOCAL_DEVICE", config.local_device)
+    lora_path = os.getenv("LOCAL_PERSONAL_LORA_PATH", config.local_personal_lora_path)
+    lora_scale = float(os.getenv("LOCAL_PERSONAL_LORA_SCALE", str(config.local_personal_lora_scale)))
+    use_lora = _env_to_bool(os.getenv("LOCAL_USE_PERSONAL_LORA"), config.local_use_personal_lora)
+    try:
+      return LocalDiffusersProvider(
+        model_id=model_id,
+        device=device,
+        num_inference_steps=config.local_num_inference_steps,
+        guidance_scale=config.local_guidance_scale,
+        enable_personal_lora=use_lora,
+        personal_lora_path=lora_path,
+        personal_lora_scale=lora_scale,
+      )
+    except Exception:
+      return MockImageProvider()
+  return MockImageProvider()
 
 
 studio_config = load_config()
@@ -359,9 +787,19 @@ def health() -> dict[str, str]:
 
 @app.get("/api/capabilities")
 def capabilities() -> dict[str, Any]:
+    personal_model_path = Path(studio_config.local_personal_lora_path)
+    if not personal_model_path.is_absolute():
+      personal_model_path = (ROOT_DIR / personal_model_path).resolve()
     return {
-        "providers": ["mock", "fooocus"],
+    "providers": ["mock", "fooocus", "local"],
         "actions": ["generate", "get_config", "update_config", "list_profiles"],
+    "styles": AVAILABLE_STYLES,
+    "personal_model": {
+      "enabled": studio_config.local_use_personal_lora,
+      "path": str(personal_model_path),
+      "exists": personal_model_path.exists(),
+      "scale": studio_config.local_personal_lora_scale,
+    },
         "config_path": str(CONFIG_PATH),
     }
 
@@ -378,6 +816,20 @@ def update_config(update: ConfigUpdate) -> StudioConfig:
         studio_config.provider = update.provider
     if update.fooocus_endpoint is not None:
         studio_config.fooocus_endpoint = update.fooocus_endpoint
+    if update.local_model_id is not None:
+      studio_config.local_model_id = update.local_model_id
+    if update.local_device is not None:
+      studio_config.local_device = update.local_device
+    if update.local_num_inference_steps is not None:
+      studio_config.local_num_inference_steps = update.local_num_inference_steps
+    if update.local_guidance_scale is not None:
+      studio_config.local_guidance_scale = update.local_guidance_scale
+    if update.local_use_personal_lora is not None:
+      studio_config.local_use_personal_lora = update.local_use_personal_lora
+    if update.local_personal_lora_path is not None:
+      studio_config.local_personal_lora_path = update.local_personal_lora_path
+    if update.local_personal_lora_scale is not None:
+      studio_config.local_personal_lora_scale = update.local_personal_lora_scale
     if update.profiles is not None:
         studio_config.profiles = update.profiles
     if not studio_config.profiles:
@@ -398,15 +850,19 @@ def generate(request: GenerateRequest) -> GenerateResponse:
   selected_style = request.style if request.style != "Default" else (profile.style if profile else "Default")
   selected_ratio = request.aspect_ratio if request.aspect_ratio != "1024x1024" else (profile.aspect_ratio if profile else "1024x1024")
   selected_count = request.count if request.count != 1 else (profile.count if profile else 1)
+  translated_prompt = _translate_to_english(request.prompt)
+  translated_negative = _translate_to_english(request.negative_prompt)
+  styled_prompt, styled_negative = _apply_style_prompt(translated_prompt, translated_negative, selected_style)
   context = GenerationContext(
-    prompt=request.prompt,
-    negative_prompt=request.negative_prompt,
+    prompt=styled_prompt,
+    negative_prompt=styled_negative,
     creative_note=request.creative_note,
     profile=request.profile,
     style=selected_style,
     aspect_ratio=selected_ratio,
     seed=request.seed,
     count=selected_count,
+    use_personal_model=request.use_personal_model,
   )
   items = provider.generate(context)
   return GenerateResponse(provider=provider.provider_name, profile=request.profile, items=items)
@@ -513,6 +969,7 @@ def _index_html() -> str:
     textarea { min-height: 158px; resize: vertical; }
     .field { margin-bottom: 16px; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .ratio-picker { display: grid; grid-template-columns: 0.9fr 1.1fr; gap: 8px; }
     .actions { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
     button {
       appearance: none;
@@ -604,23 +1061,20 @@ def _index_html() -> str:
         <div class='row'>
           <div class='field'>
             <label for='style'>Style</label>
-            <select id='style'>
-              <option>Default</option>
-              <option>Photographic</option>
-              <option>Anime</option>
-              <option>Cinematic</option>
-              <option>Concept Art</option>
-            </select>
+            <select id='style'></select>
           </div>
           <div class='field'>
-            <label for='aspectRatio'>Aspect ratio</label>
-            <select id='aspectRatio'>
-              <option value='1024x1024'>1:1</option>
-              <option value='1152x896'>4:3</option>
-              <option value='896x1152'>3:4</option>
-              <option value='1344x768'>16:9</option>
-              <option value='768x1344'>9:16</option>
-            </select>
+            <label for='aspectRatioFamily'>Aspect ratio e pixel</label>
+            <div class='ratio-picker'>
+              <select id='aspectRatioFamily'>
+                <option value='1:1'>1:1</option>
+                <option value='4:3'>4:3</option>
+                <option value='3:4'>3:4</option>
+                <option value='16:9'>16:9</option>
+                <option value='9:16'>9:16</option>
+              </select>
+              <select id='aspectRatio'></select>
+            </div>
           </div>
         </div>
         <div class='row'>
@@ -646,6 +1100,12 @@ def _index_html() -> str:
           <button id='generateBtn'>Genera anteprime</button>
           <button class='ghost' id='resetBtn' type='button'>Reset</button>
         </div>
+        <div class='field' style='margin-top: 12px;'>
+          <label for='usePersonalModel' style='display:flex;align-items:center;gap:10px;text-transform:none;letter-spacing:0;font-size:14px;'>
+            <input id='usePersonalModel' type='checkbox' checked style='width:auto;accent-color:#22c55e;' />
+            Usa modello personale (LoRA)
+          </label>
+        </div>
         <p class='hint'>Il progetto espone un contratto API aperto: tu, la UI o un agente esterno potete guidare la generazione senza toccare il nucleo dell'app.</p>
       </section>
 
@@ -666,6 +1126,41 @@ def _index_html() -> str:
     const generateBtn = document.getElementById('generateBtn');
     const resetBtn = document.getElementById('resetBtn');
     const profileSelect = document.getElementById('profile');
+    const styleSelect = document.getElementById('style');
+    const aspectRatioFamilySelect = document.getElementById('aspectRatioFamily');
+    const aspectRatioSelect = document.getElementById('aspectRatio');
+    const usePersonalModelCheckbox = document.getElementById('usePersonalModel');
+
+    const ratioOptions = {
+      '1:1': ['1024x1024', '768x768', '512x512'],
+      '4:3': ['1152x864', '1024x768', '800x600'],
+      '3:4': ['864x1152', '768x1024', '600x800'],
+      '16:9': ['1344x756', '1280x720', '960x540'],
+      '9:16': ['756x1344', '720x1280', '540x960'],
+    };
+
+    function fillResolutionOptions(ratioFamily, preferredValue = null) {
+      const options = ratioOptions[ratioFamily] || ratioOptions['1:1'];
+      aspectRatioSelect.innerHTML = '';
+      options.forEach((resolution) => {
+        const option = document.createElement('option');
+        option.value = resolution;
+        option.textContent = `${ratioFamily} (${resolution} px)`;
+        aspectRatioSelect.appendChild(option);
+      });
+      if (preferredValue && options.includes(preferredValue)) {
+        aspectRatioSelect.value = preferredValue;
+      }
+    }
+
+    function findRatioFamilyFromResolution(resolution) {
+      for (const [ratioFamily, resolutions] of Object.entries(ratioOptions)) {
+        if (resolutions.includes(resolution)) {
+          return ratioFamily;
+        }
+      }
+      return '1:1';
+    }
 
     async function loadProfiles() {
       const response = await fetch(`${apiBase}/api/profiles`);
@@ -682,6 +1177,23 @@ def _index_html() -> str:
       });
     }
 
+    async function loadStyles() {
+      const response = await fetch(`${apiBase}/api/capabilities`);
+      if (!response.ok) {
+        throw new Error(`Impossibile caricare gli stili (${response.status})`);
+      }
+      const data = await response.json();
+      const styles = Array.isArray(data.styles) && data.styles.length ? data.styles : ['Default'];
+      styleSelect.innerHTML = '';
+      styles.forEach((styleName) => {
+        const option = document.createElement('option');
+        option.value = styleName;
+        option.textContent = styleName;
+        styleSelect.appendChild(option);
+      });
+      styleSelect.value = 'Default';
+    }
+
     async function refreshHealth() {
       try {
         const response = await fetch(`${apiBase}/api/health`);
@@ -693,6 +1205,21 @@ def _index_html() -> str:
         healthState.textContent = data.status;
       } catch (error) {
         healthState.textContent = 'offline';
+      }
+    }
+
+    async function loadConfig() {
+      try {
+        const response = await fetch(`${apiBase}/api/config`);
+        if (!response.ok) {
+          return;
+        }
+        const config = await response.json();
+        if (typeof config.local_use_personal_lora === 'boolean') {
+          usePersonalModelCheckbox.checked = config.local_use_personal_lora;
+        }
+      } catch (error) {
+        // Keep default checkbox state.
       }
     }
 
@@ -725,11 +1252,12 @@ def _index_html() -> str:
           prompt,
           negative_prompt: document.getElementById('negativePrompt').value.trim(),
           profile: profileSelect.value,
-          style: document.getElementById('style').value,
-          aspect_ratio: document.getElementById('aspectRatio').value,
+          style: styleSelect.value,
+          aspect_ratio: aspectRatioSelect.value,
           count: Number(document.getElementById('count').value),
           seed: document.getElementById('seed').value ? Number(document.getElementById('seed').value) : null,
           creative_note: document.getElementById('creativeNote').value.trim(),
+          use_personal_model: usePersonalModelCheckbox.checked,
         };
         const response = await fetch(`${apiBase}/api/generate`, {
           method: 'POST',
@@ -764,18 +1292,28 @@ def _index_html() -> str:
     resetBtn.addEventListener('click', () => {
       document.getElementById('prompt').value = '';
       document.getElementById('negativePrompt').value = '';
-      document.getElementById('style').value = 'Default';
-      document.getElementById('aspectRatio').value = '1024x1024';
+      styleSelect.value = 'Default';
+      aspectRatioFamilySelect.value = '1:1';
+      fillResolutionOptions('1:1', '1024x1024');
       document.getElementById('count').value = '1';
       document.getElementById('seed').value = '';
       document.getElementById('creativeNote').value = '';
+      usePersonalModelCheckbox.checked = true;
       profileSelect.value = 'default';
       output.innerHTML = "<div class='empty'>Nessuna immagine ancora. Scrivi un prompt e premi genera.</div>";
     });
 
+    aspectRatioFamilySelect.addEventListener('change', () => {
+      fillResolutionOptions(aspectRatioFamilySelect.value);
+    });
+
+    fillResolutionOptions('1:1', '1024x1024');
+
+    loadStyles();
     loadProfiles().then(() => {
       profileSelect.value = 'default';
     });
+    loadConfig();
     refreshHealth();
   </script>
 </body>

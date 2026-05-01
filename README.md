@@ -52,7 +52,7 @@ pip install -e .
 4. Avvia il server:
 
 ```bash
-uvicorn personal_image_studio.app:app --reload
+uvicorn personal_image_studio.app:app --app-dir src --reload
 ```
 
 5. Apri il browser su:

@@ -1,0 +1,45 @@
+{
+  "provider": "local",
+  "fooocus_endpoint": "http://127.0.0.1:7865",
+  "local_model_id": "runwayml/stable-diffusion-v1-5",
+  "local_device": "cpu",
+  "local_num_inference_steps": 8,
+  "local_guidance_scale": 0.0,
+  "local_use_personal_lora": true,
+  "local_personal_lora_path": "training/output/personal-lora/pytorch_lora_weights.safetensors",
+  "local_personal_lora_scale": 1.0,
+  "profiles": {
+    "default": {
+      "name": "default",
+      "display_name": "Default",
+      "style": "Default",
+      "aspect_ratio": "1024x1024",
+      "count": 1,
+      "notes": "Profilo generale per test rapidi e immagini pulite."
+    },
+    "cinematic": {
+      "name": "cinematic",
+      "display_name": "Cinematic",
+      "style": "Cinematic",
+      "aspect_ratio": "1344x768",
+      "count": 1,
+      "notes": "Perfetto per concept, poster e scene narrative."
+    },
+    "portrait": {
+      "name": "portrait",
+      "display_name": "Portrait",
+      "style": "Photographic",
+      "aspect_ratio": "896x1152",
+      "count": 1,
+      "notes": "Buono per volti, avatar e ritratti verticali."
+    },
+    "batch": {
+      "name": "batch",
+      "display_name": "Batch",
+      "style": "Concept Art",
+      "aspect_ratio": "1024x1024",
+      "count": 4,
+      "notes": "Crea più varianti con un solo invio."
+    }
+  }
+}
