@@ -1,447 +1,191 @@
-﻿# APRIL Diffusion Training Report
+﻿# APRIL Training Report
 
-## Goal
+## Executive Summary
 
-Build a high-quality but computation-efficient LoRA training pipeline for Stable Diffusion on CPU-only hardware.
+I ran a fast CPU-only LoRA experiment on Stable Diffusion 1.5 with both the UNet and the CLIP text encoder enabled. The pipeline is now working end to end: training completes, checkpoints are written, and validation produces CLIP scores and summary files.
 
-The design below is optimized for:
-- small, high-quality datasets
-- reproducible LoRA fine-tuning
-- no validation inside the training loop
-- separate offline evaluation with CLIP scoring
-- easy integration into the APRIL system
+The important result is that this specific high-rank, short-run configuration did not improve quality. The model trains without crashing, but the new checkpoint scores lower than the previous baseline. That means the implementation is correct, but the current hyperparameters are too aggressive or not yet tuned for this dataset.
 
-## Recommended Training Strategy
+## What Was Tested
 
-Use Stable Diffusion 1.5 as the base model instead of a turbo variant for training.
+- Base model: `runwayml/stable-diffusion-v1-5`
+- Training mode: LoRA on UNet + CLIP text encoder
+- Hardware target: CPU only
+- Run length: `100` training steps
+- Checkpointing: every `50` steps
+- Validation: offline, separate from training
+- Evaluation metric: CLIP image-text similarity
 
-Why:
-- SD 1.5 is better documented and more stable for LoRA fine-tuning.
-- Turbo models are optimized for speed at inference, not necessarily for training quality.
-- On CPU, the bottleneck is the training loop itself, so we should maximize training stability and minimize waste.
+This was intentionally a fast run, meant to answer one question: does adding the text encoder help enough to justify the extra complexity and cost? At the moment, the answer is no for this configuration.
 
-The main rule is simple:
-- train only on curated data
-- save checkpoints periodically
-- do not generate validation images during training
-- evaluate later in a separate script
+## Training Configuration
 
-## Proposed Project Layout
+- Script: `training/train/train_lora.py`
+- Steps: `100`
+- LoRA rank / alpha: `16 / 32`
+- Learning rate: `1e-5`
+- Warmup: `20` steps
+- Batch size: `1`
+- Gradient accumulation: `4`
+- Text encoder training: enabled
+- Checkpoints saved at: `50` and `100`
 
-```text
-/data
-  raw/
-  filtered/
-  captions/
-/train
-  dataset.py
-  train_lora.py
-/val
-  validate.py
-/models
-  base_model/
-  lora/
-/training
-  configs/
-  logs/
-/evaluation
-  clip_score.py
+Command used:
+
+```powershell
+c:/Users/aless/Desktop/codes/codice/IMAGE/.venv/Scripts/python.exe training/train/train_lora.py --max-train-steps 100 --checkpoint-steps 50 --log-every 10 --lora-rank 16 --lora-alpha 32 --train-text-encoder
 ```
 
-Recommended module responsibilities:
-- `train/dataset.py`: filtering, caption loading, dataset class, dataloader factory
-- `train/train_lora.py`: LoRA fine-tuning entry point
-- `val/validate.py`: load a checkpoint and generate images from fixed prompts
-- `evaluation/clip_score.py`: compute CLIP similarity and log scores over time
-
-## Dataset Handling
-
-### Target dataset size
-
-Use about 50 to 120 high-quality images.
+## Dataset Situation
 
-If you currently have around 150 images, trim aggressively:
-- remove duplicates
-- remove blurry, dark, low-detail, or inconsistent images
-- remove images with bad framing, weird artifacts, or wrong identity/style
-- keep only images that support the intended visual concept
-
-### Caption quality
-
-Captions must be:
-- descriptive
-- consistent
-- not overly verbose
-- aligned with the visual identity you want to preserve
-
-Good captions mention:
-- subject identity or concept
-- pose or framing
-- lighting
-- environment or background
-- style if relevant
+- Records loaded from manifest: `159`
+- Cached features loaded into RAM: `183`
+- Training ran from the already filtered/cached dataset pipeline
 
-Bad captions:
-- too generic
-- contradictory
-- keyword spam
-- different naming for the same subject
+This matters because the dataset is no longer the bottleneck. The training loop is stable, and the cache is doing its job. The remaining problem is model quality, not pipeline failure.
 
-### Dataset filtering approach
+## Training Behavior
 
-Recommended filtering pipeline:
-1. Perceptual duplicate detection
-2. Blur / sharpness filtering
-3. Very low resolution filtering
-4. Optional CLIP-based relevance filtering
-5. Manual final review
+Trainable parameter groups reported by the run:
 
-### Example dataset loader contract
+- UNet trainable params: `256`
+- Text encoder trainable params: `48`
 
-`training/dataset.py` should expose something like:
+Loss values logged during the run show an unstable pattern rather than a smooth steady improvement:
 
-```python
-from dataclasses import dataclass
-from pathlib import Path
-from torch.utils.data import Dataset, DataLoader
+- step 10: `0.072454`
+- step 20: `0.076384`
+- step 30: `0.241367`
+- step 40: `0.282571`
+- step 50: `0.476960`
+- step 60: `0.719111`
+- step 70: `1.108075`
+- step 80: `0.125654`
+- step 90: `0.060259`
+- step 100: `0.532710`
 
-@dataclass
-class DatasetItem:
-    image_path: Path
-    caption: str
-
-class CaptionedImageDataset(Dataset):
-    def __init__(self, root_dir: str, captions_file: str | None = None):
-        ...
-
-    def __len__(self) -> int:
-        ...
-
-    def __getitem__(self, index: int):
-        ...
-
-def build_dataloader(dataset: Dataset, batch_size: int, num_workers: int = 0):
-    ...
-```
-
-### Practical filtering implementation
-
-A useful filtering heuristic is to compute:
-- image size
-- Laplacian variance for blur
-- perceptual hash or SSIM-like duplicate detection
-- optional CLIP similarity against caption or class prompt
-
-## Training Pipeline
-
-### Core approach
-
-Use Hugging Face Diffusers with LoRA fine-tuning on the UNet.
-
-Keep the training loop minimal:
-- load dataset
-- load base model
-- attach LoRA adapters
-- optimize only LoRA parameters
-- save checkpoints every N steps or epochs
-- never do validation image generation in the loop
+Interpretation:
 
-### CPU optimization rules
+- The run is learning something, but the signal is noisy.
+- The higher rank and text-encoder fine-tuning likely made the optimization more sensitive.
+- For a small CPU run, this can easily overshoot and then partially recover.
 
-On CPU-only systems:
-- use batch size 1
-- use gradient accumulation
-- keep dataloader workers low or zero if I/O is unstable
-- use cached latents if storage permits
-- avoid frequent image decoding during training
-- keep validation fully separate
-
-### Suggested hyperparameters
-
-Start here:
-- base model: Stable Diffusion 1.5
-- learning rate: `1e-5`
-- epochs: `5` to `15`
-- LoRA rank: `8` or `16`
-- batch size: `1`
-- gradient accumulation: `4` or `8`
-- checkpoint interval: every `100` to `250` steps
-- validation interval: offline only
-
-### Mixed precision
-
-On CPU, mixed precision usually does not help much and can be unsupported or unstable. Prefer standard float32 unless you have verified bfloat16 support and an actual performance gain.
-
-### Caching latents
-
-If the dataset is small and stable, cache image latents to disk or to a lightweight local cache.
-
-This reduces repeated VAE encoding and helps CPU runs a lot.
-
-Tradeoff:
-- faster training
-- more disk usage
-- less flexibility if preprocessing changes
+Final training metadata:
 
-## Training Script Design
+- Final step: `100`
+- Final loss: `0.5327098965644836`
+- Mean epoch loss: `0.305685`
+- Text encoder trained: `true`
 
-`train/train_lora.py` should:
-- read a config file or CLI arguments
-- load the filtered dataset
-- instantiate the base model
-- wrap LoRA adapters on attention layers
-- train only adapter parameters
-- save checkpoints
-- write logs to disk
-- exit cleanly with training metadata
+## Checkpoints Produced
 
-### Suggested training config
+- `training/output/personal-lora/checkpoint-50`
+- `training/output/personal-lora/checkpoint-100`
 
-```python
-from dataclasses import dataclass
+The checkpoint structure is now split in a way that supports the two-adapter setup:
 
-@dataclass
-class TrainConfig:
-    base_model: str = "runwayml/stable-diffusion-v1-5"
-    dataset_dir: str = "data/filtered"
-    caption_file: str | None = "data/captions/captions.jsonl"
-    output_dir: str = "models/lora"
-    learning_rate: float = 1e-5
-    epochs: int = 10
-    batch_size: int = 1
-    gradient_accumulation_steps: int = 4
-    lora_rank: int = 8
-    checkpoint_steps: int = 200
-    seed: int = 42
-```
+- UNet LoRA weights in `checkpoint-100/unet/`
+- text encoder adapter in `checkpoint-100/text_encoder/`
 
-### Training loop outline
+## Validation Results
 
-```python
-for epoch in range(config.epochs):
-    for batch in dataloader:
-        loss = training_step(batch)
-        loss.backward()
+Validation script:
 
-        if step % config.gradient_accumulation_steps == 0:
-            optimizer.step()
-            optimizer.zero_grad()
+- `training/val/validate.py`
 
-        if global_step % config.checkpoint_steps == 0:
-            save_checkpoint(...)
-```
+Validation artifacts created:
 
-### Important rule
+- `training/output/validation/clip_results.json`
+- `training/output/validation/clip_results.csv`
+- `training/output/validation/validation_summary.json`
+- `training/output/validation/checkpoint-100.json`
 
-Do not call image generation from inside the training loop.
+Primary multi-prompt validation result:
 
-That is the main reason CPU training becomes unusable.
+- Checkpoint: `checkpoint-100`
+- Mean CLIP score: `0.2229231297969818`
 
-## Validation Strategy
+Quick single-prompt validation result:
 
-Validation must be a separate script.
+- Prompt: `portrait of pstyle subject, cinematic lighting`
+- CLIP score: `0.2075512409210205`
 
-### Why separate validation matters
+What this means:
 
-- training stays deterministic and simpler
-- no long blocking calls during training
-- you can run validation only when you need it
-- validation can be scheduled on a different machine later
-- easier to compare checkpoints consistently
+- Validation works.
+- The score is measurable and repeatable.
+- The current experiment does not beat the previous baseline.
 
-### Validation script behavior
+## Baseline Comparison
 
-`val/validate.py` should:
-- load a chosen checkpoint
-- load a fixed set of prompts
-- generate a small number of images per prompt
-- save images to disk
-- compute CLIP score
-- write results to JSON or CSV
+- Previous baseline CLIP score: `0.2528`
+- New multi-prompt score: `0.2229`
+- New single-prompt score: `0.2076`
 
-### Suggested validation prompts
+Conclusion:
 
-Use a fixed evaluation prompt set:
-- one prompt for subject identity
-- one for style fidelity
-- one for background consistency
-- one for pose variation
-- one for generalization
+- The new text-encoder-enabled run is worse than the previous baseline on this metric.
+- This does not mean the architecture is broken.
+- It means the current hyperparameters are not the right tradeoff for this dataset.
 
-Keep the prompt list stable across runs so scores are comparable.
+## What Was Fixed
 
-### Validation output contract
+1. Training API mismatch
+   - Fixed `pipeline.text_model` to `pipeline.text_encoder` in `training/train/train_lora.py`.
 
-The script should produce:
-- generated image files
-- one JSON file with per-image CLIP scores
-- one summary file with mean score and checkpoint metadata
+2. Text encoder checkpoint serialization
+   - Replaced unsupported `save_lora_adapter(...)` with PEFT-compatible `save_pretrained(...)` for the text encoder.
 
-## CLIP-Based Evaluation
+3. Validation loading compatibility
+   - Updated `training/val/validate.py` so the UNet and text encoder adapters are loaded with the current diffusers/PEFT behavior.
 
-Use CLIP as a lightweight proxy for prompt adherence.
+These fixes are important because they prove the new training path is operational, even though the score is not yet good.
 
-### What it measures
+## Current Situation
 
-CLIP similarity helps estimate:
-- prompt-image alignment
-- whether a checkpoint is improving
-- which checkpoints are better than others
+The situation is now clear:
 
-### What it does not measure well
+- The training stack is working.
+- The text encoder LoRA path is working.
+- The validation stack is working.
+- The latest fast run is not yet good enough in quality terms.
 
-CLIP alone does not capture:
-- face quality
-- identity consistency
-- aesthetic quality
-- fine-grained realism
+So the next step is not more debugging. It is tuning.
 
-So it should be used with checkpoint comparison and manual spot checks.
+## Recommended Next Experiment
 
-### Suggested scoring flow
+The strongest next move is to make the run less aggressive:
 
-For each checkpoint:
-1. generate images from fixed prompts
-2. compute CLIP similarity for each image-prompt pair
-3. compute average score per checkpoint
-4. track best checkpoint over time
+- lower LoRA rank to `8`
+- lower alpha to `16`
+- reduce learning rate to `5e-6`
+- compare `checkpoint-50` and `checkpoint-100`
+- keep the same prompts for validation so results stay comparable
 
-### Example contract for `evaluation/clip_score.py`
+If the goal is highest signal with the least wasted time, the next experiment should prioritize stability over capacity.
 
-```python
-from dataclasses import dataclass
-from pathlib import Path
+## Second Evaluation Pass
 
-@dataclass
-class ClipResult:
-    image_path: str
-    prompt: str
-    score: float
+I reran validation in a more serious paired mode to check whether the low visual quality was just a validation artifact.
 
+- Checkpoint tested: `checkpoint-200`
+- Validation setup: `3` prompts, `3` images per prompt, same seeds for checkpoint and base model
+- Compared against: the plain base model with no LoRA loaded
 
-def score_image_text_pairs(image_paths, prompts, model_name="openai/clip-vit-base-patch32"):
-    ...
-```
+Results:
 
-## Best-Checkpoint Selection
+- Checkpoint-200 CLIP score: `0.2420651929246055`
+- Base model CLIP score: `0.24193080597453648`
+- Delta vs base: `+0.0001343869500690098`
 
-Do not pick the best checkpoint only by training loss.
+Interpretation:
 
-Better approach:
-- use training loss as a stability signal
-- use CLIP score as the first automatic quality metric
-- inspect the top 2 or 3 checkpoints manually
-
-Recommended rule:
-- save the checkpoint with the best mean CLIP score
-- also keep the latest checkpoint
-- keep a small rolling window of checkpoints
+- The validation pipeline is not obviously broken.
+- The checkpoint and the base model score almost the same under this metric.
+- That matches the visual inspection: the model is not producing a clearly better result.
+- The CLIP score here is too weak to explain the aesthetic quality difference on its own.
 
-## Logging and Tracking
+Practical conclusion:
 
-Log these values:
-- global step
-- epoch
-- loss
-- learning rate
-- checkpoint path
-- validation CLIP mean score
-- validation CLIP per prompt
-
-Save logs as:
-- JSONL for machine parsing
-- CSV for quick inspection
-- plain text summary for humans
-
-## Performance Optimizations
-
-### CPU bottleneck reduction
-
-Use these tactics:
-- resize images once during preprocessing
-- cache filtered dataset metadata
-- cache latents when possible
-- keep workers low if disk is slow
-- avoid repeatedly reloading the base model
-- disable expensive validation in training
-
-### Memory reduction
-
-Use:
-- small batch size
-- gradient accumulation
-- attention slicing if supported
-- no unnecessary pipeline components during training
-- no validation generation until offline evaluation
-
-### Dataloader efficiency
-
-For CPU systems, a practical choice is:
-- `num_workers=0` or `1`
-- `pin_memory=False`
-- `persistent_workers=False`
-
-If the dataset is small and local SSD is available, a single worker is often enough.
-
-## Recommended APRIL Integration
-
-Make the pipeline easy for APRIL to call with:
-- one training entry point
-- one validation entry point
-- JSON config files
-- structured output directories
-- machine-readable result files
-
-Suggested runtime artifacts:
-- `models/lora/checkpoint-XXXX/`
-- `models/lora/best/`
-- `training/logs/train.jsonl`
-- `training/logs/validation.jsonl`
-- `evaluation/clip_scores.csv`
-
-## Practical Execution Plan
-
-### Phase 1
-- clean dataset down to 50 to 120 high-quality images
-- create consistent captions
-- build dataset loader
-
-### Phase 2
-- implement CPU-friendly LoRA training
-- save checkpoints only
-- no validation generation inside training
-
-### Phase 3
-- implement offline validation
-- generate fixed-prompt images from checkpoints
-- compute CLIP scores
-
-### Phase 4
-- choose best checkpoint
-- manually inspect top candidates
-- integrate into APRIL
-
-## Recommended Default Setup
-
-If starting fresh, use this baseline:
-- model: Stable Diffusion 1.5
-- LoRA rank: 8
-- learning rate: 1e-5
-- epochs: 10
-- batch size: 1
-- gradient accumulation: 4
-- checkpoint interval: 200 steps
-- validation: separate script only
-- metric: CLIP score + manual review
-
-## Final Recommendation
-
-For CPU-only training, the best balance is not to force validation into the training loop.
-
-Instead:
-- train cheaply and consistently
-- save checkpoints often
-- evaluate offline with CLIP
-- keep only the best-performing checkpoints
-
-That gives you a pipeline that is both practical and scalable for APRIL.
+- This is not a strong validation bug signal.
+- It is more likely a model-quality issue, or a metric that is too coarse to reflect visual appeal.

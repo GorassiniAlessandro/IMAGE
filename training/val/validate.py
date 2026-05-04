@@ -9,6 +9,8 @@ from pathlib import Path
 
 import torch
 from diffusers import StableDiffusionPipeline
+from peft import PeftModel
+from safetensors.torch import load_file
 
 # ROOT adjusted because file is now in training/val
 ROOT = Path(__file__).resolve().parents[2]
@@ -46,6 +48,7 @@ class ValidationConfig:
     seed: int = 42
     clip_model: str = "openai/clip-vit-base-patch32"
     lora_scale: float = 1.0
+    compare_base_model: bool = False
 
 
 def resolve_path(value: str | None, default_path: Path) -> Path:
@@ -90,7 +93,23 @@ def generate_for_checkpoint(
     checkpoint_output_dir = output_dir / checkpoint_dir.name
     checkpoint_output_dir.mkdir(parents=True, exist_ok=True)
 
-    pipeline.load_lora_weights(str(checkpoint_dir))
+    # Load the UNet LoRA weights from the adapter file saved under unet/.
+    unet_adapter_file = checkpoint_dir / "unet" / "pytorch_lora_weights.safetensors"
+    if not unet_adapter_file.exists():
+        raise FileNotFoundError(f"Missing UNet adapter file: {unet_adapter_file}")
+    pipeline.unet.load_lora_adapter(load_file(unet_adapter_file), prefix=None)
+
+    # Load text encoder LoRA adapter if present.
+    text_encoder_adapter_dir = checkpoint_dir / "text_encoder"
+    if text_encoder_adapter_dir.exists() and (text_encoder_adapter_dir / "adapter_config.json").exists():
+        pipeline.text_encoder = PeftModel.from_pretrained(
+            pipeline.text_encoder,
+            str(text_encoder_adapter_dir),
+            adapter_name="default",
+        )
+    elif text_encoder_adapter_dir.exists():
+        print(f"No text encoder adapter found in {text_encoder_adapter_dir}; skipping text encoder LoRA load.")
+
     if hasattr(pipeline, "fuse_lora"):
         pipeline.fuse_lora(lora_scale=config.lora_scale)
 
@@ -124,6 +143,46 @@ def generate_for_checkpoint(
     return results
 
 
+def generate_baseline_scores(
+    pipeline: StableDiffusionPipeline,
+    prompts: list[str],
+    output_dir: Path,
+    config: ValidationConfig,
+    clip_scorer: ClipScorer,
+) -> list[ClipScoreResult]:
+    baseline_output_dir = output_dir / "base-model"
+    baseline_output_dir.mkdir(parents=True, exist_ok=True)
+
+    results: list[ClipScoreResult] = []
+
+    for prompt_index, prompt in enumerate(prompts):
+        for image_index in range(config.images_per_prompt):
+            seed_value = config.seed + prompt_index * 100 + image_index
+            generator = torch.Generator(device=config.device).manual_seed(seed_value)
+            rendered = pipeline(
+                prompt=prompt,
+                num_inference_steps=config.steps,
+                guidance_scale=config.guidance_scale,
+                width=config.width,
+                height=config.height,
+                generator=generator,
+            )
+            image = rendered.images[0]
+            image_path = baseline_output_dir / f"{prompt_index + 1:02d}_{image_index + 1:02d}.png"
+            image.save(image_path)
+            score = clip_scorer.score_pair(image_path, prompt)
+            results.append(
+                ClipScoreResult(
+                    checkpoint_name="base-model",
+                    image_path=str(image_path),
+                    prompt=prompt,
+                    score=score,
+                )
+            )
+
+    return results
+
+
 def copy_best_checkpoint(best_dir: Path, checkpoint_dir: Path) -> None:
     best_dir.parent.mkdir(parents=True, exist_ok=True)
     if best_dir.exists():
@@ -148,6 +207,7 @@ def main() -> int:
     parser.add_argument("--prompts", nargs="*", default=None)
     parser.add_argument("--clip-model", default="openai/clip-vit-base-patch32")
     parser.add_argument("--lora-scale", type=float, default=1.0)
+    parser.add_argument("--compare-base-model", action="store_true")
     args = parser.parse_args()
 
     output_dir = resolve_path(args.output_dir, DEFAULT_OUTPUT_DIR)
@@ -175,6 +235,7 @@ def main() -> int:
         seed=args.seed,
         clip_model=args.clip_model,
         lora_scale=args.lora_scale,
+        compare_base_model=args.compare_base_model,
     )
 
     checkpoint_dirs: list[Path]
@@ -188,6 +249,7 @@ def main() -> int:
     all_results: list[ClipScoreResult] = []
     best_checkpoint: Path | None = None
     best_score = float("-inf")
+    baseline_score: float | None = None
     clip_scorer = ClipScorer(model_name=config.clip_model, device=config.device)
 
     for checkpoint_dir in checkpoint_dirs:
@@ -207,6 +269,24 @@ def main() -> int:
             best_score = checkpoint_score
             best_checkpoint = checkpoint_dir
 
+    if config.compare_base_model:
+        baseline_pipeline = load_pipeline(config.base_model, config.device)
+        baseline_results = generate_baseline_scores(baseline_pipeline, prompts, output_dir, config, clip_scorer)
+        all_results.extend(baseline_results)
+        baseline_score = sum(result.score for result in baseline_results) / max(1, len(baseline_results))
+        (output_dir / "base-model.json").write_text(
+            json.dumps(
+                {
+                    "checkpoint": "base-model",
+                    "score": baseline_score,
+                    "results": [result.__dict__ for result in baseline_results],
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
     report_path_json = write_clip_results_json(all_results, output_dir / "clip_results.json")
     report_path_csv = write_clip_results_csv(all_results, output_dir / "clip_results.csv")
 
@@ -218,6 +298,9 @@ def main() -> int:
         "results_csv": str(report_path_csv),
         "count": len(all_results),
     }
+    if baseline_score is not None:
+        summary["baseline_score"] = baseline_score
+        summary["score_delta_vs_baseline"] = best_score - baseline_score
     (output_dir / "validation_summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 
     if best_checkpoint is not None:

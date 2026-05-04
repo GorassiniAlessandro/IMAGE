@@ -1,213 +1,205 @@
 # Personal Image Studio
 
-Personal Image Studio è la tua base personale per creare immagini con una AI locale, personalizzabile e guidabile anche da agenti esterni. Il progetto non copia Fooocus: si ispira al suo approccio semplice e diretto, ma lo traduce in un'architettura originale, modulare e controllabile da te.
+Personal Image Studio is a local, customizable image-generation base that can also be driven by external agents. It does not copy Fooocus; instead, it keeps the same practical spirit and turns it into an original, modular architecture that you control.
 
-L'idea è questa:
+The design goal is simple:
 
-- usi l'app tu, in locale, con la tua interfaccia
-- un'altra AI o uno script possono comandarla via API
-- puoi cambiare provider, profili e comportamento senza riscrivere tutto
+- you use the app locally through your own UI
+- another AI or a script can drive it through the API
+- you can change provider, profiles, and behavior without rewriting the whole stack
 
-## Cosa fa il progetto
+## What It Does
 
-- genera immagini di prova subito, anche senza GPU o modelli pesanti
-- espone una UI web locale semplice da usare
-- salva la configurazione in un file locale persistente
-- permette di creare profili personalizzati
-- espone endpoint REST per automazioni e integrazioni future
-- lascia il provider di generazione separato dal resto dell'app
+- generates preview images immediately, even without a GPU or heavy models
+- exposes a simple local web UI
+- stores configuration in a persistent local file
+- lets you create reusable profiles
+- exposes REST endpoints for automation and future integrations
+- keeps the image-generation provider separate from the rest of the app
 
-## Architettura
+## Architecture
 
-Il progetto è diviso in tre livelli:
+The project is organized in three layers:
 
-1. UI web locale: una pagina semplice per prompt, profili e output.
-2. API FastAPI: endpoint per generare immagini, leggere la configurazione e gestire i profili.
-3. Provider immagine: componente sostituibile che oggi produce anteprime SVG, ma domani può collegarsi a Fooocus o a un altro motore.
+1. Local web UI: a simple page for prompts, profiles, and outputs.
+2. FastAPI API: endpoints for image generation, configuration, and profile management.
+3. Image provider: a swappable component that currently produces SVG previews, but can later connect to Fooocus or another engine.
 
-## Requisiti
+## Requirements
 
-- Windows, Linux o macOS
-- Python 3.10 o superiore
-- un ambiente virtuale Python consigliato
-- opzionalmente una GPU e un backend immagine reale per la fase successiva
+- Windows, Linux, or macOS
+- Python 3.10 or newer
+- a Python virtual environment is recommended
+- optionally, a GPU and a real image backend for the next stage
 
-## Struttura del progetto
+## Project Layout
 
-- `src/personal_image_studio/app.py`: applicazione FastAPI, UI e provider
-- `pyproject.toml`: dipendenze e configurazione del pacchetto
-- `README.md`: documentazione del progetto
-- `studio_config.json`: configurazione locale generata a runtime
+- `src/personal_image_studio/app.py`: FastAPI app, UI, and provider implementation
+- `training/dataset.py`: dataset filtering, caption loading, and manifest creation
+- `training/train/train_lora.py`: main LoRA training entry point
+- `training/train_personal_lora.py`: training wrapper with profile presets
+- `training/val/validate.py`: offline validation and CLIP scoring
+- `training/evaluation/clip_score.py`: CLIP scoring helpers
+- `pyproject.toml`: package dependencies and configuration
+- `studio_config.json`: local runtime configuration
+- `README.md`: project documentation
 
-## Avvio rapido
+## Quick Start
 
-1. Apri la cartella del progetto.
-2. Attiva l'ambiente virtuale Python se vuoi usare quello già presente.
-3. Installa il progetto in modalità editabile:
+1. Open the project folder.
+2. Activate your Python virtual environment if you want to use the existing one.
+3. Install the project in editable mode:
 
 ```bash
 pip install -e .
 ```
 
-4. Avvia il server:
+4. Start the server:
 
 ```bash
 uvicorn personal_image_studio.app:app --app-dir src --reload
 ```
 
-5. Apri il browser su:
+5. Open the browser at:
 
 ```text
 http://127.0.0.1:8000
 ```
 
-## Come si usa
+## How To Use It
 
-Nella UI puoi:
+In the UI you can:
 
-- scrivere un prompt
-- scegliere un profilo
-- impostare stile, aspect ratio e numero di immagini
-- aggiungere una nota creativa per automazioni esterne
-- generare anteprime immediate
+- write a prompt
+- choose a profile
+- set style, aspect ratio, and image count
+- add a creative note for external automations
+- generate immediate previews
 
-Le anteprime attuali sono SVG dimostrative. Servono per testare il flusso end-to-end senza dipendere ancora da modelli pesanti.
+The current previews are SVG placeholders. They are meant to test the end-to-end flow without depending on heavy models yet.
 
-## Profili personalizzati
+## Custom Profiles
 
-I profili servono per salvare preset di lavoro riutilizzabili. Il progetto include profili base come:
+Profiles are reusable presets. The project ships with a few base profiles:
 
 - default
 - cinematic
 - portrait
 - batch
 
-Puoi modificarli tramite l'API o direttamente nel file `studio_config.json`.
+You can edit them through the API or directly in `studio_config.json`.
 
-Ogni profilo può controllare:
+Each profile can control:
 
-- nome visualizzato
-- stile predefinito
-- aspect ratio predefinito
-- numero di immagini predefinito
-- nota descrittiva
+- display name
+- default style
+- default aspect ratio
+- default image count
+- notes
 
-## Configurazione locale
+## Local Configuration
 
-La configurazione persistente viene salvata in `studio_config.json` nella root del progetto. Se il file non esiste, l'app parte con valori di default e lo crea quando serve.
+Persistent configuration is stored in `studio_config.json` at the project root. If the file does not exist, the app starts with defaults and creates it when needed.
 
-Campi principali:
+Main fields:
 
-- `provider`: provider attivo, ad esempio `mock` o `fooocus`
-- `fooocus_endpoint`: indirizzo del servizio Fooocus se decidi di collegarlo
-- `profiles`: mappa dei profili personalizzati
+- `provider`: active provider, for example `mock` or `fooocus`
+- `fooocus_endpoint`: Fooocus service address if you connect one later
+- `local_model_id`: base model used by the local generator
+- `local_use_personal_lora`: enables the trained personal LoRA
+- `local_personal_lora_path`: path to the LoRA weights used by the app
+- `profiles`: map of custom profiles
 
-## Variabili d'ambiente
+## Environment Variables
 
-Puoi sovrascrivere il comportamento del progetto con queste variabili:
+You can override the project behavior with these variables:
 
-- `IMAGE_AI_PROVIDER`: forza il provider attivo, ad esempio `mock` o `fooocus`
-- `FOOOCUS_ENDPOINT`: endpoint del backend Fooocus locale o remoto
+- `IMAGE_AI_PROVIDER`: forces the active provider, for example `mock` or `fooocus`
+- `FOOOCUS_ENDPOINT`: local or remote Fooocus backend endpoint
 
-## Endpoint API
+## API Endpoints
 
-Il progetto è pensato per essere comandato anche da un'altra AI o da uno script. Gli endpoint principali sono:
+The project is designed to be controlled by another AI or by scripts. The main endpoints are:
 
-- `GET /api/health`: stato del servizio e provider attivo
-- `GET /api/capabilities`: elenco delle capacità esposte
-- `GET /api/config`: configurazione corrente
-- `PUT /api/config`: aggiorna configurazione e profili
-- `GET /api/profiles`: lista dei profili disponibili
-- `POST /api/generate`: genera immagini a partire da un prompt
+- `GET /api/health`: service status and active provider
+- `GET /api/capabilities`: list of available capabilities
+- `GET /api/config`: current configuration
+- `PUT /api/config`: update configuration and profiles
+- `GET /api/profiles`: list available profiles
+- `POST /api/generate`: generate images from a prompt
 
-### Esempio di richiesta di generazione
-
-```json
-{
-	"prompt": "ritratto cinematografico di un androide in una città al tramonto",
-	"negative_prompt": "blurry, low quality, extra fingers",
-	"profile": "cinematic",
-	"style": "Default",
-	"aspect_ratio": "1024x1024",
-	"count": 1,
-	"seed": null,
-	"creative_note": "mantieni palette fredda e luci neon"
-}
-```
-
-### Esempio di risposta
+### Generation Request Example
 
 ```json
 {
-	"provider": "mock",
-	"profile": "cinematic",
-	"items": [
-		{
-			"title": "Preview 1",
-			"image_data_uri": "data:image/svg+xml;base64,...",
-			"prompt": "ritratto cinematografico di un androide in una città al tramonto",
-			"notes": "Profilo: cinematic | Style: Cinematic | Aspect ratio: 1344x768 | Nota creativa: mantieni palette fredda e luci neon"
-		}
-	]
+  "prompt": "cinematic portrait of an android in a city at sunset",
+  "negative_prompt": "blurry, low quality, extra fingers",
+  "profile": "cinematic",
+  "style": "Default",
+  "aspect_ratio": "1024x1024",
+  "count": 1,
+  "seed": null,
+  "creative_note": "keep a cool palette and neon lights"
 }
 ```
 
-## Come personalizzare davvero il progetto
+### Response Example
 
-Hai tre livelli di personalizzazione:
-
-1. UI: puoi cambiare campi, profili e testo mostrati nell'interfaccia.
-2. Configurazione: puoi modificare `studio_config.json` o usare l'endpoint `PUT /api/config`.
-3. Motore: puoi sostituire il provider mock con un bridge vero verso Fooocus o un altro servizio.
-
-Se vuoi usare Fooocus più avanti, il punto da collegare è il provider `FooocusBridgeProvider` in `src/personal_image_studio/app.py`.
-
-## Uso con un'altra AI o automazione
-
-Il progetto è pensato per lavorare bene anche con un agente esterno. Un'altra AI può:
-
-- leggere `GET /api/capabilities`
-- leggere i profili con `GET /api/profiles`
-- aggiornare i profili con `PUT /api/config`
-- inviare prompt e note creative con `POST /api/generate`
-
-Questo rende il progetto utile sia per uso manuale sia per workflow automatici.
-
-## Pubblicazione su GitHub
-
-Quando vuoi pubblicarlo sul tuo GitHub personale:
-
-1. crea un repository vuoto sul tuo account GitHub
-2. collega il remote al repository locale
-3. fai il primo commit
-4. fai il push del branch principale
-
-Comandi tipici:
-
-```bash
-git add .
-git commit -m "Initial personal image studio"
-git branch -M main
-git remote add origin <URL-del-tuo-repository>
-git push -u origin main
+```json
+{
+  "provider": "mock",
+  "profile": "cinematic",
+  "items": [
+    {
+      "title": "Preview 1",
+      "image_data_uri": "data:image/svg+xml;base64,...",
+      "prompt": "cinematic portrait of an android in a city at sunset",
+      "notes": "Profile: cinematic | Style: Cinematic | Aspect ratio: 1344x768 | Creative note: keep a cool palette and neon lights"
+    }
+  ]
+}
 ```
 
-## Roadmap consigliata
+## Training Pipeline
 
-- collegare il provider a Fooocus o a un altro motore reale
-- aggiungere cronologia dei job e salvataggio immagini
-- creare un editor dei profili direttamente nella UI
-- aggiungere esportazione/importazione della configurazione
-- preparare una modalità per controllo remoto con chiavi API
+Training has been split into a dedicated `training/` area so the app remains clean and the training workflow is easier to maintain.
 
-## Nota su Fooocus
+The main pieces are:
 
-Fooocus è un progetto esterno noto per il flusso semplice e per la generazione di immagini offline di buona qualità. Questo repository ne richiama l'approccio, ma resta un progetto separato e originale.
+- `training/dataset.py`: filters images, loads captions, creates manifests, and builds dataloaders
+- `training/prepare_benchmark_subset.py`: creates a reproducible filtered benchmark subset
+- `training/train/train_lora.py`: main LoRA training script
+- `training/train_personal_lora.py`: wrapper that selects a profile and launches training
+- `training/val/validate.py`: runs offline validation on saved checkpoints
+- `training/evaluation/clip_score.py`: computes CLIP similarity scores for generated outputs
 
-## Stato attuale
+Current training defaults are tuned for CPU-friendly runs and keep validation outside the training loop.
 
-In questo momento il progetto è già usabile come base locale e come API dimostrativa. La parte di generazione reale può essere collegata in un secondo momento senza cambiare la struttura generale.
+## Training Output
 
-## Licenza
+The current training output path used by the app is:
+
+```text
+training/output/personal-lora/pytorch_lora_weights.safetensors
+```
+
+The app loads the personal LoRA from this path when `local_use_personal_lora` is enabled.
+
+## Working With Another AI Or Automation
+
+The project is designed to work well with an external agent. Another AI can:
+
+- read `GET /api/capabilities`
+- read profiles with `GET /api/profiles`
+- update profiles with `PUT /api/config`
+- send prompts and creative notes with `POST /api/generate`
+
+This makes the project useful both for manual use and for automated workflows.
+
+## Current Status
+
+The project is already usable as a local base and as a demonstrator API. The real image backend can be connected later without changing the overall structure.
+
+## License
 
 GPL-3.0-only.
