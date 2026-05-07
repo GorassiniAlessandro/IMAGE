@@ -177,6 +177,19 @@ The main pieces are:
 
 Current training defaults are tuned for CPU-friendly runs and keep validation outside the training loop.
 
+## Next Personal Model
+
+The next personal model should follow the Hugging Face diffusion course path in [Diffusion Models from Scratch](https://huggingface.co/learn/diffusion-course/en/unit1/3).
+
+The practical order for that work is:
+
+- start from the corruption process and the minimal UNet example
+- reproduce the training loop on a small dataset such as MNIST or FashionMNIST
+- compare the from-scratch approach with diffusers `UNet2DModel`
+- only after that, adapt the ideas back into the personal LoRA workspace
+
+This keeps the next model grounded in the mechanics of diffusion before scaling back up to the personalized image pipeline.
+
 ## Training Output
 
 The current training output path used by the app is:
