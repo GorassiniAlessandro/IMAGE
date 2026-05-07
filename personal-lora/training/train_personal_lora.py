@@ -7,9 +7,9 @@ import sys
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DATA_DIR = ROOT / "training" / "dataset" / "raw"
-DEFAULT_OUTPUT_DIR = ROOT / "training" / "output" / "personal-lora"
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DATA_DIR = ROOT / "personal-lora" / "training" / "dataset" / "raw"
+DEFAULT_OUTPUT_DIR = ROOT / "personal-lora" / "checkpoints"
 
 
 TRAINING_PROFILE_DEFAULTS = {
@@ -58,7 +58,7 @@ def _build_command(args: argparse.Namespace) -> list[str]:
     base_model = args.base_model_path if args.base_model_path else args.base_model
     command = [
         sys.executable,
-        str(ROOT / "training" / "train" / "train_lora.py"),
+        str(ROOT / "personal-lora" / "training" / "train" / "train_lora.py"),
         "--base-model",
         base_model,
         "--data-dir",
@@ -114,7 +114,7 @@ def main() -> int:
     parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR))
     parser.add_argument("--captions-file", default=None)
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
-    parser.add_argument("--cache-dir", default=str(ROOT / "training" / "cache" / "personal-lora"))
+    parser.add_argument("--cache-dir", default=str(ROOT / "personal-lora" / "cache"))
     parser.add_argument("--manifest-path", default=None)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=None)

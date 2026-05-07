@@ -6,15 +6,15 @@ import shutil
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from training.dataset import FilterConfig, build_filtered_records
 
 
-DEFAULT_SOURCE_DIR = ROOT / "training" / "dataset" / "raw"
-DEFAULT_OUTPUT_DIR = ROOT / "training" / "dataset" / "benchmark"
+DEFAULT_SOURCE_DIR = ROOT / "personal-lora" / "training" / "dataset" / "raw"
+DEFAULT_OUTPUT_DIR = ROOT / "personal-lora" / "training" / "dataset" / "benchmark"
 DEFAULT_MANIFEST_PATH = DEFAULT_OUTPUT_DIR / "benchmark_manifest.jsonl"
 DEFAULT_SUMMARY_PATH = DEFAULT_OUTPUT_DIR / "benchmark_summary.json"
 DEFAULT_FILTER_CONFIG = FilterConfig()

@@ -8,8 +8,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-ROOT = Path(__file__).resolve().parents[1]
-OUT_DIR = ROOT / "training" / "dataset" / "raw"
+ROOT = Path(__file__).resolve().parents[2]
+OUT_DIR = ROOT / "personal-lora" / "training" / "dataset" / "raw"
 
 
 def _save_sample(image, prompt: str, source: str, source_row: int, config_name: str) -> None:
@@ -67,7 +67,7 @@ def _build_from_cifar10(sample_count: int, seed: int, config_name: str) -> int:
     from torchvision.datasets import CIFAR10
 
     print("Carico dataset CIFAR-10 (open/public, no login)...")
-    data_root = ROOT / "training" / "dataset" / "cifar10-cache"
+    data_root = ROOT / "personal-lora" / "training" / "dataset" / "cifar10-cache"
     ds = CIFAR10(root=str(data_root), train=True, download=True)
     class_names = ds.classes
 

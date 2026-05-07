@@ -23,8 +23,8 @@ from peft import LoraConfig
 
 from transformers import CLIPTextModel, CLIPTokenizer
 
-# ROOT now two levels up because this file lives in training/train
-ROOT = Path(__file__).resolve().parents[2]
+# ROOT is the repository root from personal-lora/training/train.
+ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -41,12 +41,13 @@ from training.dataset import (
 )
 
 
-DEFAULT_DATA_DIR = ROOT / "training" / "dataset" / "raw"
-DEFAULT_CAPTIONS = ROOT / "training" / "dataset" / "captions.jsonl"
-DEFAULT_OUTPUT_DIR = ROOT / "training" / "output" / "personal-lora"
-DEFAULT_CACHE_DIR = ROOT / "training" / "cache" / "personal-lora"
+DEFAULT_DATA_DIR = ROOT / "personal-lora" / "training" / "dataset" / "raw"
+DEFAULT_CAPTIONS = ROOT / "personal-lora" / "training" / "dataset" / "captions.jsonl"
+DEFAULT_EXPERIMENT_DIR = ROOT / "personal-lora"
+DEFAULT_OUTPUT_DIR = DEFAULT_EXPERIMENT_DIR / "checkpoints"
+DEFAULT_CACHE_DIR = DEFAULT_EXPERIMENT_DIR / "cache"
 DEFAULT_BASE_MODEL = "runwayml/stable-diffusion-v1-5"
-DEFAULT_LOG_DIR = ROOT / "training" / "logs"
+DEFAULT_LOG_DIR = DEFAULT_EXPERIMENT_DIR / "logs"
 DEFAULT_MANIFEST = DEFAULT_LOG_DIR / "filtered_manifest.jsonl"
 DEFAULT_TRAIN_LOG = DEFAULT_LOG_DIR / "train_log.jsonl"
 

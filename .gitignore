@@ -10,30 +10,26 @@ venv/
 .env.*
 outputs/
 models/hf-cache/
-training/output/
-training/dataset/
+personal-lora/checkpoints/
+personal-lora/cache/
+personal-lora/logs/
+personal-lora/validation/
+personal-lora/eval/
+personal-lora/smoke/
+personal-lora/training/cache/
+personal-lora/training/**/checkpoint-*/
+personal-lora/training/dataset/*
+models/lora/
+models/**/best/
 
 *.log
 .DS_Store
 Thumbs.db
-
-# Large model artifacts and training caches
 *.safetensors
 *.ckpt
 *.pth
 *.pt
 
-# Training caches and checkpoints
-training/cache/
-training/**/checkpoint-*/
-training/**/.pt
-training/**/.safetensors
-
-# Model exports and large model folders
-models/lora/
-models/**/best/
-
-# Local caches
 .cache/
 .huggingface/
 huggingface_hub/

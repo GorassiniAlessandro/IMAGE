@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def main() -> int:
@@ -29,7 +29,7 @@ def main() -> int:
 
     cmd = [
         sys.executable,
-        str(ROOT / "val" / "validate.py"),
+        str(ROOT / "personal-lora" / "training" / "val" / "validate.py"),
         "--device",
         args.device,
         "--steps",

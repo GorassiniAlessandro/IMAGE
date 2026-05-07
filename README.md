@@ -35,11 +35,13 @@ The project is organized in three layers:
 ## Project Layout
 
 - `src/personal_image_studio/app.py`: FastAPI app, UI, and provider implementation
-- `training/dataset.py`: dataset filtering, caption loading, and manifest creation
-- `training/train/train_lora.py`: main LoRA training entry point
-- `training/train_personal_lora.py`: training wrapper with profile presets
-- `training/val/validate.py`: offline validation and CLIP scoring
-- `training/evaluation/clip_score.py`: CLIP scoring helpers
+- `personal-lora/training/dataset.py`: dataset filtering, caption loading, and manifest creation
+- `personal-lora/training/`: training code, dataset helpers, and dataset assets for the current LoRA workspace
+- `personal-lora/`: named workspace for the current LoRA experiment, logs, caches, checkpoints, validation outputs, and training dataset
+- `personal-lora/training/train/train_lora.py`: main LoRA training entry point
+- `personal-lora/training/train_personal_lora.py`: training wrapper with profile presets
+- `personal-lora/training/val/validate.py`: offline validation and CLIP scoring
+- `personal-lora/training/evaluation/clip_score.py`: CLIP scoring helpers
 - `pyproject.toml`: package dependencies and configuration
 - `studio_config.json`: local runtime configuration
 - `README.md`: project documentation
@@ -162,16 +164,16 @@ The project is designed to be controlled by another AI or by scripts. The main e
 
 ## Training Pipeline
 
-Training has been split into a dedicated `training/` area so the app remains clean and the training workflow is easier to maintain.
+Training has been split into a dedicated `personal-lora/training/` area so the app remains clean and the training workflow is easier to maintain.
 
 The main pieces are:
 
-- `training/dataset.py`: filters images, loads captions, creates manifests, and builds dataloaders
-- `training/prepare_benchmark_subset.py`: creates a reproducible filtered benchmark subset
-- `training/train/train_lora.py`: main LoRA training script
-- `training/train_personal_lora.py`: wrapper that selects a profile and launches training
-- `training/val/validate.py`: runs offline validation on saved checkpoints
-- `training/evaluation/clip_score.py`: computes CLIP similarity scores for generated outputs
+- `personal-lora/training/dataset.py`: filters images, loads captions, creates manifests, and builds dataloaders
+- `personal-lora/training/prepare_benchmark_subset.py`: creates a reproducible filtered benchmark subset
+- `personal-lora/training/train/train_lora.py`: main LoRA training script
+- `personal-lora/training/train_personal_lora.py`: wrapper that selects a profile and launches training
+- `personal-lora/training/val/validate.py`: runs offline validation on saved checkpoints
+- `personal-lora/training/evaluation/clip_score.py`: computes CLIP similarity scores for generated outputs
 
 Current training defaults are tuned for CPU-friendly runs and keep validation outside the training loop.
 
@@ -180,7 +182,7 @@ Current training defaults are tuned for CPU-friendly runs and keep validation ou
 The current training output path used by the app is:
 
 ```text
-training/output/personal-lora/pytorch_lora_weights.safetensors
+personal-lora/checkpoints/pytorch_lora_weights.safetensors
 ```
 
 The app loads the personal LoRA from this path when `local_use_personal_lora` is enabled.

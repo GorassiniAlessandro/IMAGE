@@ -12,8 +12,8 @@ from diffusers import StableDiffusionPipeline
 from peft import PeftModel
 from safetensors.torch import load_file
 
-# ROOT adjusted because file is now in training/val
-ROOT = Path(__file__).resolve().parents[2]
+# ROOT is the repository root from personal-lora/training/val.
+ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -21,8 +21,8 @@ from training.evaluation.clip_score import ClipScoreResult, ClipScorer, write_cl
 
 
 DEFAULT_BASE_MODEL = "runwayml/stable-diffusion-v1-5"
-DEFAULT_CHECKPOINT_ROOT = ROOT / "training" / "output" / "personal-lora"
-DEFAULT_OUTPUT_DIR = ROOT / "training" / "output" / "validation"
+DEFAULT_CHECKPOINT_ROOT = ROOT / "personal-lora" / "checkpoints"
+DEFAULT_OUTPUT_DIR = ROOT / "personal-lora" / "validation"
 DEFAULT_BEST_DIR = ROOT / "models" / "lora" / "best"
 DEFAULT_PROMPTS = [
     "portrait of pstyle subject, cinematic lighting",
